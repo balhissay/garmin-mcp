@@ -1,52 +1,27 @@
-# fly.toml — Fly.io deployment for garmin-mcp.
+# fly.toml app configuration file generated for garmin-mcp-nrlo2w on 2026-05-09T15:44:04Z
 #
-# This is a single-tenant personal deployment. Region default is Warsaw
-# (`waw`); change `primary_region` to anything closer to you. The app name
-# below is a placeholder — `fly launch` will rewrite it (or override with
-# `fly launch --name <yours>`).
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
-# Secrets (NEVER bake into this file or the image):
-#   fly secrets set MCP_BEARER_TOKEN=$(openssl rand -hex 32)
-#
-# Tokens are bootstrapped locally with `garmin-mcp auth login` and copied
-# onto the volume via `fly ssh sftp shell` — see README "Deployment".
 
-app = "garmin-mcp"
-primary_region = "waw"
+app = 'garmin-mcp-nrlo2w'
+primary_region = 'ams'
 
 [build]
-  # Builds the Dockerfile at the repo root (default builder).
-
-[env]
-  MCP_TRANSPORT = "http"
-  MCP_HOST = "0.0.0.0"
-  MCP_PORT = "8000"
-  GARMIN_TOKENS_PATH = "/data/tokens"
 
 [[mounts]]
-  source = "garmin_tokens"
-  destination = "/data/tokens"
-  initial_size = "1gb"
+  source = 'tokens'
+  destination = '/data/tokens'
 
 [http_service]
-  internal_port = 8000
+  internal_port = 8080
   force_https = true
-  # Always-on. The app holds a long-lived Garmin session and a process-local
-  # cache; cold starts would discard both and add a multi-second SSO step
-  # to the first request after each idle window.
-  auto_stop_machines = false
+  auto_stop_machines = 'stop'
   auto_start_machines = true
-  min_machines_running = 1
-  processes = ["app"]
-
-  [[http_service.checks]]
-    interval = "30s"
-    timeout = "5s"
-    grace_period = "10s"
-    method = "get"
-    path = "/healthz"
+  min_machines_running = 0
+  processes = ['app']
 
 [[vm]]
-  size = "shared-cpu-1x"
-  memory = "256mb"
+  memory = '1gb'
+  cpu_kind = 'shared'
   cpus = 1
+  memory_mb = 256
