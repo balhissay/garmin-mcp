@@ -26,40 +26,44 @@ from garmin_mcp.tools._trimmers import trim_scheduled_workouts, trim_workout, tr
 ClientFactory = Callable[[], Garmin]
 
 
-# Garmin's API uses small integer IDs plus a string key for these enums.
-# IDs are taken from `garminconnect.workout.{ConditionType,TargetType,StepType}`.
+# Garmin's workout-service uses small integer IDs plus a string key for these
+# enums. Keep the canonical wire IDs explicit here: the pinned garminconnect
+# 0.3.3 enum values predate the corrections in the workout-service mapping.
 _END_CONDITIONS: dict[str, dict[str, Any]] = {
+    "lap_button": {"conditionTypeId": 1, "conditionTypeKey": "lap.button", "displayOrder": 1,
+                   "displayable": True},
     "time": {"conditionTypeId": 2, "conditionTypeKey": "time", "displayOrder": 2,
              "displayable": True},
-    "distance": {"conditionTypeId": 1, "conditionTypeKey": "distance", "displayOrder": 1,
+    "distance": {"conditionTypeId": 3, "conditionTypeKey": "distance", "displayOrder": 3,
                  "displayable": True},
-    "heart_rate": {"conditionTypeId": 3, "conditionTypeKey": "heart.rate", "displayOrder": 3,
+    "heart_rate": {"conditionTypeId": 6, "conditionTypeKey": "heart.rate", "displayOrder": 6,
                    "displayable": True},
     "calories": {"conditionTypeId": 4, "conditionTypeKey": "calories", "displayOrder": 4,
                  "displayable": True},
-    "cadence": {"conditionTypeId": 5, "conditionTypeKey": "cadence", "displayOrder": 5,
+    "power": {"conditionTypeId": 5, "conditionTypeKey": "power", "displayOrder": 5,
                 "displayable": True},
 }
 
 # Garmin's `targetType` enum collapses zone-flavored and range-flavored
 # targets under the same id — `heart_rate_zone` and `heart_rate` both ride
-# id 4 / key `heart.rate.zone`; `pace_zone` and `pace` both ride id 5 /
-# key `speed.zone`. The distinction is purely encoding: a zone target
-# emits `step.zoneNumber`, a range target emits `targetValueOne/Two`.
+# id 4 / key `heart.rate.zone`; `pace_zone` and `pace` both ride id 6 /
+# key `pace.zone`. The distinction is purely encoding: a zone target emits
+# `step.zoneNumber`, a range target emits `targetValueOne/Two`.
 # Garmin renders them differently on the watch and on Connect ("Zone 2"
-# vs "140-160 bpm"), but the wire-level target-type block is identical.
+# vs "140-160 bpm" or a pace range), but the wire-level target-type block is
+# identical.
 _TARGET_TYPES: dict[str, dict[str, Any]] = {
     "none": {"workoutTargetTypeId": 1, "workoutTargetTypeKey": "no.target", "displayOrder": 1},
     "heart_rate_zone": {"workoutTargetTypeId": 4, "workoutTargetTypeKey": "heart.rate.zone",
                         "displayOrder": 4},
     "heart_rate": {"workoutTargetTypeId": 4, "workoutTargetTypeKey": "heart.rate.zone",
                    "displayOrder": 4},
-    "pace_zone": {"workoutTargetTypeId": 5, "workoutTargetTypeKey": "speed.zone",
-                  "displayOrder": 5},
-    "pace": {"workoutTargetTypeId": 5, "workoutTargetTypeKey": "speed.zone",
-             "displayOrder": 5},
+    "pace_zone": {"workoutTargetTypeId": 6, "workoutTargetTypeKey": "pace.zone",
+                  "displayOrder": 6},
+    "pace": {"workoutTargetTypeId": 6, "workoutTargetTypeKey": "pace.zone",
+             "displayOrder": 6},
     "cadence": {"workoutTargetTypeId": 3, "workoutTargetTypeKey": "cadence", "displayOrder": 3},
-    "open": {"workoutTargetTypeId": 6, "workoutTargetTypeKey": "open", "displayOrder": 6},
+    "open": {"workoutTargetTypeId": 1, "workoutTargetTypeKey": "no.target", "displayOrder": 1},
 }
 
 # Each `target_type` has exactly one valid input shape:
@@ -107,16 +111,25 @@ def _build_executable_step(spec: dict[str, Any], step_order: int) -> ExecutableS
         )
 
     raw_end_value = spec.get("end_value")
-    if raw_end_value is None:
-        raise ValueError(f"end_value is required for step type {step_type!r}")
-    if isinstance(raw_end_value, bool):
-        raise ValueError(f"end_value must be numeric, got {raw_end_value!r}")
-    try:
-        end_value = float(raw_end_value)
-    except (TypeError, ValueError) as e:
-        raise ValueError(f"end_value must be numeric, got {raw_end_value!r}") from e
-    if end_value <= 0:
-        raise ValueError(f"end_value must be positive, got {raw_end_value!r}")
+    if end_condition == "lap_button":
+        if step_type not in {"warmup", "cooldown"}:
+            raise ValueError(
+                "end_condition='lap_button' is only supported for warmup and cooldown steps"
+            )
+        if raw_end_value is not None:
+            raise ValueError("end_value must be omitted when end_condition='lap_button'")
+        end_value = None
+    else:
+        if raw_end_value is None:
+            raise ValueError(f"end_value is required for step type {step_type!r}")
+        if isinstance(raw_end_value, bool):
+            raise ValueError(f"end_value must be numeric, got {raw_end_value!r}")
+        try:
+            end_value = float(raw_end_value)
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"end_value must be numeric, got {raw_end_value!r}") from e
+        if end_value <= 0:
+            raise ValueError(f"end_value must be positive, got {raw_end_value!r}")
 
     target = spec.get("target_type", "none")
     if target not in _TARGET_TYPES:
@@ -125,10 +138,13 @@ def _build_executable_step(spec: dict[str, Any], step_order: int) -> ExecutableS
         )
     target_dict = dict(_TARGET_TYPES[target])
 
-    step = builder(end_value, step_order, target_dict)
+    # The helper constructors require a numeric argument even though Garmin's
+    # lap-button end condition has no value. Use a temporary value to build the
+    # step, then clear it so it is omitted from the serialized payload.
+    step = builder(end_value if end_value is not None else 0.0, step_order, target_dict)
 
     # The helpers always default to a TIME end condition; override when callers
-    # asked for something else (distance, heart_rate, calories, cadence).
+    # asked for something else.
     if end_condition != "time":
         step.endCondition = dict(_END_CONDITIONS[end_condition])
     step.endConditionValue = end_value
@@ -322,8 +338,10 @@ def register(mcp: FastMCP, client_factory: ClientFactory) -> None:
                 "steps": [...]}` containing the inner steps.
                 Other (non-repeat) step fields:
                   - `end_condition`: one of `time` (seconds), `distance`
-                    (meters), `heart_rate` (bpm), `calories`, `cadence`
-                  - `end_value`: numeric value matching `end_condition`
+                    (meters), `heart_rate` (bpm), `calories`, `power`, or
+                    `lap_button` (warmup/cooldown only)
+                  - `end_value`: numeric value matching `end_condition`;
+                    omit for `lap_button`
                   - `target_type` (optional, default `none`): selects the
                     step target shape. Each target_type has exactly one
                     valid input shape; passing fields from the wrong shape
