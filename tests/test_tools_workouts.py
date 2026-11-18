@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from garminconnect import GarminConnectTooManyRequestsError
 from garminconnect.workout import RepeatGroup, RunningWorkout
 
@@ -68,8 +69,10 @@ def test_schedule_running_workout_builds_repeat_group(mcp_with_tools, mock_garmi
     # The inner interval picked up the distance end condition and pace target.
     interval = repeat.workoutSteps[0]
     assert interval.endCondition["conditionTypeKey"] == "distance"
+    assert interval.endCondition["conditionTypeId"] == 3
     assert interval.endConditionValue == 800
-    assert interval.targetType["workoutTargetTypeKey"] == "speed.zone"
+    assert interval.targetType["workoutTargetTypeId"] == 6
+    assert interval.targetType["workoutTargetTypeKey"] == "pace.zone"
     assert interval.targetValueOne == 4.0
     assert interval.targetValueTwo == 4.17
 
@@ -83,6 +86,90 @@ def test_schedule_running_workout_builds_repeat_group(mcp_with_tools, mock_garmi
     assert inner_interval.stepOrder == 3
     assert inner_recovery.stepOrder == 4
     assert cooldown.stepOrder == 5
+
+
+@pytest.mark.parametrize(
+    ("end_condition", "end_value", "condition_type_id", "condition_type_key"),
+    [
+        ("time", 60, 2, "time"),
+        ("distance", 800, 3, "distance"),
+        ("calories", 100, 4, "calories"),
+        ("power", 200, 5, "power"),
+        ("heart_rate", 150, 6, "heart.rate"),
+    ],
+)
+def test_end_conditions_use_garmin_workout_service_ids(
+    mcp_with_tools,
+    mock_garmin,
+    end_condition: str,
+    end_value: int,
+    condition_type_id: int,
+    condition_type_key: str,
+) -> None:
+    fn = get_tool(mcp_with_tools, "schedule_running_workout")
+    fn(
+        date="2026-05-28",
+        name="End condition enum test",
+        steps=[
+            {
+                "type": "interval",
+                "end_condition": end_condition,
+                "end_value": end_value,
+            }
+        ],
+    )
+
+    upload_arg = mock_garmin.upload_running_workout.call_args.args[0]
+    step = upload_arg.to_dict()["workoutSegments"][0]["workoutSteps"][0]
+    assert step["endCondition"]["conditionTypeId"] == condition_type_id
+    assert step["endCondition"]["conditionTypeKey"] == condition_type_key
+    assert step["endConditionValue"] == end_value
+
+
+@pytest.mark.parametrize("step_type", ["warmup", "cooldown"])
+def test_lap_button_steps_omit_end_condition_value(
+    mcp_with_tools,
+    mock_garmin,
+    step_type: str,
+) -> None:
+    fn = get_tool(mcp_with_tools, "schedule_running_workout")
+    fn(
+        date="2026-05-28",
+        name=f"Open {step_type}",
+        steps=[{"type": step_type, "end_condition": "lap_button"}],
+    )
+
+    upload_arg = mock_garmin.upload_running_workout.call_args.args[0]
+    step = upload_arg.to_dict()["workoutSegments"][0]["workoutSteps"][0]
+    assert step["endCondition"]["conditionTypeId"] == 1
+    assert step["endCondition"]["conditionTypeKey"] == "lap.button"
+    assert "endConditionValue" not in step
+
+
+def test_lap_button_is_restricted_to_warmup_and_cooldown(mcp_with_tools, mock_garmin) -> None:
+    fn = get_tool(mcp_with_tools, "schedule_running_workout")
+    result = fn(
+        date="2026-05-28",
+        name="Invalid open interval",
+        steps=[{"type": "interval", "end_condition": "lap_button"}],
+    )
+
+    assert result.get("error") == "bad_argument"
+    assert "only supported for warmup and cooldown" in result["message"]
+    mock_garmin.upload_running_workout.assert_not_called()
+
+
+def test_lap_button_rejects_an_end_value(mcp_with_tools, mock_garmin) -> None:
+    fn = get_tool(mcp_with_tools, "schedule_running_workout")
+    result = fn(
+        date="2026-05-28",
+        name="Invalid open warmup",
+        steps=[{"type": "warmup", "end_condition": "lap_button", "end_value": 600}],
+    )
+
+    assert result.get("error") == "bad_argument"
+    assert "end_value must be omitted" in result["message"]
+    mock_garmin.upload_running_workout.assert_not_called()
 
 
 def test_extra_fields_survive_to_dict(mcp_with_tools, mock_garmin) -> None:
@@ -106,6 +193,10 @@ def test_extra_fields_survive_to_dict(mcp_with_tools, mock_garmin) -> None:
     upload_arg = mock_garmin.upload_running_workout.call_args.args[0]
     payload = upload_arg.to_dict()
     step = payload["workoutSegments"][0]["workoutSteps"][0]
+    assert step["endCondition"]["conditionTypeId"] == 3
+    assert step["endCondition"]["conditionTypeKey"] == "distance"
+    assert step["targetType"]["workoutTargetTypeId"] == 6
+    assert step["targetType"]["workoutTargetTypeKey"] == "pace.zone"
     assert step["targetValueOne"] == 4.0
     assert step["targetValueTwo"] == 4.17
     assert step["description"] == "stay smooth"
@@ -178,7 +269,8 @@ def test_pace_zone_emits_zone_number(mcp_with_tools, mock_garmin) -> None:
     payload = upload_arg.to_dict()
     step = payload["workoutSegments"][0]["workoutSteps"][0]
     assert step.get("zoneNumber") == 4
-    assert step["targetType"]["workoutTargetTypeKey"] == "speed.zone"
+    assert step["targetType"]["workoutTargetTypeId"] == 6
+    assert step["targetType"]["workoutTargetTypeKey"] == "pace.zone"
     assert "targetValueOne" not in step
     assert "targetValueTwo" not in step
 
@@ -200,10 +292,32 @@ def test_pace_range_emits_target_values(mcp_with_tools, mock_garmin) -> None:
     upload_arg = mock_garmin.upload_running_workout.call_args.args[0]
     payload = upload_arg.to_dict()
     step = payload["workoutSegments"][0]["workoutSteps"][0]
-    assert step["targetType"]["workoutTargetTypeKey"] == "speed.zone"
+    assert step["targetType"]["workoutTargetTypeId"] == 6
+    assert step["targetType"]["workoutTargetTypeKey"] == "pace.zone"
     assert step["targetValueOne"] == 4.0
     assert step["targetValueTwo"] == 4.17
     assert "zoneNumber" not in step
+
+
+def test_open_target_uses_no_target_enum(mcp_with_tools, mock_garmin) -> None:
+    fn = get_tool(mcp_with_tools, "schedule_running_workout")
+    fn(
+        date="2026-05-26",
+        name="Open target test",
+        steps=[
+            {
+                "type": "interval",
+                "end_condition": "time",
+                "end_value": 600,
+                "target_type": "open",
+            },
+        ],
+    )
+
+    upload_arg = mock_garmin.upload_running_workout.call_args.args[0]
+    step = upload_arg.to_dict()["workoutSegments"][0]["workoutSteps"][0]
+    assert step["targetType"]["workoutTargetTypeId"] == 1
+    assert step["targetType"]["workoutTargetTypeKey"] == "no.target"
 
 
 def test_cadence_range_emits_target_values(mcp_with_tools, mock_garmin) -> None:

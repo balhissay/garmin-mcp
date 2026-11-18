@@ -165,8 +165,8 @@ Non-repeat step fields:
 
 | Field          | Values                                                                            |
 | -------------- | --------------------------------------------------------------------------------- |
-| `end_condition`| `time` (seconds), `distance` (meters), `heart_rate` (bpm), `calories`, `cadence`  |
-| `end_value`    | numeric — interpreted per `end_condition`                                         |
+| `end_condition`| `time` (seconds), `distance` (meters), `heart_rate` (bpm), `calories`, `power`; `lap_button` for warmup/cooldown |
+| `end_value`    | numeric — interpreted per `end_condition`; omit for `lap_button`                 |
 | `target_type`  | one of the seven values below (optional, default `none`)                          |
 | `zone`         | integer 1–5; required when `target_type` is a `*_zone` variant                    |
 | `target_low`   | numeric lower bound; required when `target_type` is a range variant               |
@@ -183,13 +183,15 @@ is rejected with a `bad_argument` error that names the target_type you probably 
 | `pace_zone`       | `zone` (int 1–5)                         | run in pace zone N                 |
 | `pace`            | `target_low`, `target_high` (m/s)        | run in a custom m/s pace range     |
 | `cadence`         | `target_low`, `target_high` (spm)        | run in a custom cadence range      |
-| `open`            | _(none)_                                 | open / freeform target             |
+| `open`            | _(none)_                                 | alias for an open / no-target step |
 | `none`            | _(none)_                                 | no target                          |
 
-HR-zone and pace-zone encodings (single `zoneNumber` on the wire), HR-range and pace-range
-encodings (`targetValueOne/Two` in bpm and m/s respectively) are all verified live against
-Garmin Connect. `cadence` is **unverified live** — if Garmin renders a cadence target as
-a raw spm range instead of a zone label, it likely needs the same `zone` treatment as HR.
+The target IDs use Garmin's workout-service enums: HR targets use `heart.rate.zone` (ID 4),
+pace targets use `pace.zone` (ID 6), and custom ranges are sent in
+`targetValueOne/targetValueTwo` (bpm for HR, m/s for pace). These mappings have unit-test
+coverage. Because Garmin may accept and normalize an invalid enum without an upload error,
+verify the saved workout with `get_workout` before relying on a new mapping. `cadence` target
+ranges are not verified live.
 
 #### Example 1 — easy run (HR zone)
 
@@ -264,6 +266,23 @@ schedule_running_workout(
         {"type": "interval", "end_condition": "time", "end_value": 600,
          "target_type": "pace_zone", "zone": 4},
         {"type": "cooldown", "end_condition": "time", "end_value": 300},
+    ],
+)
+```
+
+#### Open-ended warmup and cooldown
+
+Use `lap_button` without `end_value` for warmup or cooldown steps that the
+athlete ends manually with the lap button:
+
+```python
+schedule_running_workout(
+    date="2026-05-31",
+    name="Open warmup and cooldown",
+    steps=[
+        {"type": "warmup", "end_condition": "lap_button"},
+        {"type": "interval", "end_condition": "distance", "end_value": 5000},
+        {"type": "cooldown", "end_condition": "lap_button"},
     ],
 )
 ```
